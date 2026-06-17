@@ -1,11 +1,10 @@
-# Query: 
-# ContextLines: 1
-
 import sys
 import random
 import math
 
 # Try to import pygame, if not available, use a simple tkinter-based alternative
+
+# Most of the credit to copilot, but go to line 91 to edit the background
 try:
     import pygame
     PYGAME_AVAILABLE = True
@@ -13,12 +12,12 @@ except ImportError:
     PYGAME_AVAILABLE = False
     print("pygame not found. Install it with: pip install pygame")
     print("Using alternative tkinter-based implementation instead...\n")
+if PYGAME_AVAILABLE==True:
 
-if PYGAME_AVAILABLE:
     # Pygame version
     pygame.init()
 
-    SCREEN_WIDTH = 400
+    SCREEN_WIDTH = 900
     SCREEN_HEIGHT = 600
     BLACK = (0, 0, 0)
     WHITE = (255, 255, 255)
@@ -29,7 +28,7 @@ if PYGAME_AVAILABLE:
 
     FPS = 60
     GRAVITY = 0.5
-    FLAP_STRENGTH = -12
+    FLAP_STRENGTH = -7
     PIPE_WIDTH = 80
     PIPE_GAP = 120
     PIPE_SPEED = 5
@@ -64,7 +63,7 @@ if PYGAME_AVAILABLE:
             self.x = x
             self.width = PIPE_WIDTH
             self.gap = PIPE_GAP
-            self.height = PIPE_HEIGHT
+            self.height = SCREEN_HEIGHT
             self.gap_y = random.randint(50, SCREEN_HEIGHT - self.gap - 50)
             self.top_rect = pygame.Rect(self.x, 0, self.width, self.gap_y)
             self.bottom_rect = pygame.Rect(self.x, self.gap_y + self.gap, self.width, self.height - self.gap_y)
@@ -87,114 +86,91 @@ if PYGAME_AVAILABLE:
 
     class Game:
         def __init__(self):
-            self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-            pygame.display.set_caption("Flappy Bird Clone")
-            self.clock = pygame.time.Clock()
-            self.font = pygame.font.Font(None, 36)
-            self.large_font = pygame.font.Font(None, 72)
+            self.screen=pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+            pygame.display.set_caption("Flappy Bird")
+            self.background=pygame.image.load("new background.png").convert() #This is where you need to add the file name with the picture, with the file type (like shown), and it needs to be in the same folder as the game file
+            self.background=pygame.transform.scale(self.background, (SCREEN_WIDTH, SCREEN_HEIGHT))
+            self.clock=pygame.time.Clock()
+            self.font=pygame.font.Font(None, 36)
+            self.large_font=pygame.font.Font(None, 72)
             self.reset_game()
-        
         def reset_game(self):
-            self.bird = Bird(50, SCREEN_HEIGHT // 2)
-            self.pipes = []
-            self.score = 0
-            self.game_over = False
-            self.frame_count = 0
-        
+            self.bird=Bird(50, SCREEN_HEIGHT // 2)
+            self.pipes =[]
+            self.score=0
+            self.game_over =False
+            self.frame_count=0
         def handle_events(self):
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+                if event.type ==pygame.QUIT:
                     return False
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_SPACE:
+                if event.type ==pygame.KEYDOWN:
+                    if event.key ==pygame.K_SPACE:
                         if self.game_over:
                             self.reset_game()
                         else:
                             self.bird.flap()
-                if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.type ==pygame.MOUSEBUTTONDOWN:
                     if self.game_over:
                         self.reset_game()
                     else:
                         self.bird.flap()
             return True
-        
         def update(self):
             if self.game_over:
                 return
-            
-            self.frame_count += 1
+            self.frame_count+=1
             self.bird.update()
-            
             if self.bird.is_off_screen():
-                self.game_over = True
-            
-            if self.frame_count % PIPE_SPAWN_RATE == 0:
+                self.game_over=True
+            if self.frame_count% PIPE_SPAWN_RATE==0:
                 self.pipes.append(Pipe(SCREEN_WIDTH))
-            
             for pipe in self.pipes:
                 pipe.update()
-                
                 if pipe.collides_with(self.bird):
-                    self.game_over = True
-                
-                if not pipe.passed and pipe.x + pipe.width < self.bird.x:
-                    pipe.passed = True
-                    self.score += 1
-            
-            self.pipes = [pipe for pipe in self.pipes if not pipe.is_off_screen()]
-        
+                    self.game_over=True
+                if not pipe.passed and pipe.x +pipe.width <self.bird.x:
+                    pipe.passed=True
+                    self.score+=1
+            self.pipes=[pipe for pipe in self.pipes if not pipe.is_off_screen()]
         def draw(self):
-            self.screen.fill((135, 206, 235))
-            
+            self.screen.blit(self.background, (0,0))
             for pipe in self.pipes:
                 pipe.draw(self.screen)
-            
             self.bird.draw(self.screen)
-            
-            score_text = self.font.render(f"Score: {self.score}", True, BLACK)
-            self.screen.blit(score_text, (10, 10))
-            
+            score_text=self.font.render(f"Score: {self.score}", True, BLACK)
+            self.screen.blit(score_text, (10,10))
             if self.game_over:
-                overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+                overlay=pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
                 overlay.set_alpha(128)
                 overlay.fill(BLACK)
-                self.screen.blit(overlay, (0, 0))
-                
-                game_over_text = self.large_font.render("GAME OVER", True, RED)
-                game_over_rect = game_over_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 60))
+                self.screen.blit(overlay,(0,0))
+                game_over_text=self.large_font.render("GAME OVER", True, RED)
+                game_over_rect=game_over_text.get_rect(center=(SCREEN_WIDTH //2, SCREEN_HEIGHT //2))
                 self.screen.blit(game_over_text, game_over_rect)
-                
-                final_score_text = self.font.render(f"Final Score: {self.score}", True, WHITE)
-                final_score_rect = final_score_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
-                self.screen.blit(final_score_text, final_score_rect)
-                
-                restart_text = self.font.render("Press SPACE or CLICK to restart", True, CYAN)
-                restart_rect = restart_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 60))
+                restart_text=self.font.render("Press SPACE or CLICK to restart", True, CYAN)
+                restart_rect=restart_text.get_rect(center=(SCREEN_WIDTH //2, SCREEN_HEIGHT//2+60))
                 self.screen.blit(restart_text, restart_rect)
-            
             pygame.display.flip()
-        
         def run(self):
-            running = True
+            running=True
             while running:
-                running = self.handle_events()
+                running=self.handle_events()
                 self.update()
                 self.draw()
                 self.clock.tick(FPS)
-            
             pygame.quit()
             sys.exit()
-
 else:
     # Tkinter fallback version (no external dependencies)
     import tkinter as tk
     from tkinter import messagebox
 
-    SCREEN_WIDTH = 400
+    SCREEN_WIDTH = 900
     SCREEN_HEIGHT = 600
     FPS = 60
     GRAVITY = 0.5
-    FLAP_STRENGTH = -10
+    FLAP_STRENGTH = -7
     PIPE_WIDTH = 80
     PIPE_GAP = 120
     PIPE_SPEED = 5
@@ -241,6 +217,7 @@ else:
             self.x = x
             self.width = PIPE_WIDTH
             self.gap = PIPE_GAP
+            self.height = SCREEN_HEIGHT
             self.gap_y = random.randint(50, SCREEN_HEIGHT - self.gap - 50)
             self.passed = False
         
@@ -260,13 +237,12 @@ else:
             self.canvas = tk.Canvas(self.root, width=SCREEN_WIDTH, height=SCREEN_HEIGHT, bg="lightblue")
             self.canvas.pack()
             
-            self.reset_game()
             
             self.root.bind("<space>", self.on_space)
             self.root.bind("<Button-1>", self.on_click)
             
             self.update_game()
-        
+
         def reset_game(self):
             self.bird = Bird(50, SCREEN_HEIGHT // 2)
             self.pipes = []
