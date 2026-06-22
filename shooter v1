@@ -1,0 +1,246 @@
+import tkinter as tk
+import math
+import random
+
+# --- GAME CONFIGURATION ---
+SCREEN_WIDTH = 600
+SCREEN_HEIGHT = 400
+FOV = math.pi / 3  
+HALF_FOV = FOV / 2
+CASTED_RAYS = 120  
+STEP_ANGLE = FOV / CASTED_RAYS
+SCALE = SCREEN_WIDTH / CASTED_RAYS
+
+MAP = [
+    [1,1,1,1,1,1,1,1,1,1],
+    [1,0,0,0,0,1,0,0,0,1],
+    [1,0,1,1,0,1,0,1,0,1],
+    [1,0,1,0,0,0,0,1,0,1],
+    [1,0,1,0,1,1,0,1,0,1],
+    [1,0,0,0,1,0,0,0,0,1],
+    [1,0,1,0,1,0,1,1,0,1],
+    [1,0,1,0,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1,1,1,1]
+]
+TILE_SIZE = 64
+
+class Enemy:
+    def __init__(self, x_grid, y_grid):
+        self.x = x_grid * TILE_SIZE + TILE_SIZE//2
+        self.y = y_grid * TILE_SIZE + TILE_SIZE//2
+        self.speed = 1.5
+        self.alive = True
+
+    def update(self, player_x, player_y):
+        if not self.alive: return
+        # Move towards the player
+        dx = player_x - self.x
+        dy = player_y - self.y
+        dist = math.sqrt(dx*dx + dy*dy)
+        
+        if dist > 20: # Don't clip completely into the player
+            self.x += (dx / dist) * self.speed
+            self.y += (dy / dist) * self.speed
+
+class FPSGame:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Retro 3D Raycaster FPS")
+        
+        self.canvas = tk.Canvas(root, width=SCREEN_WIDTH, height=SCREEN_HEIGHT, bg="black")
+        self.canvas.pack()
+        
+        # Player Stats
+        self.player_x = 96
+        self.player_y = 96
+        self.player_angle = 0
+        self.move_speed = 7
+        self.turn_speed = 0.1
+        self.hp = 100
+        self.score = 0
+        self.game_active = True
+        
+        # State tracking
+        self.is_shooting = False
+        self.enemies = []
+        self.spawn_enemies(3)
+        
+        # Input bindings
+        self.root.bind("<KeyPress>", self.key_press)
+        self.game_loop()
+
+    def spawn_enemies(self, count):
+        self.enemies = []
+        for _ in range(count):
+            while True:
+                rx = random.randint(1, 8)
+                ry = random.randint(1, 7)
+                # Ensure they don't spawn right on top of the starting player
+                if MAP[ry][rx] == 0 and (rx > 2 or ry > 2):
+                    self.enemies.append(Enemy(rx, ry))
+                    break
+
+    def key_press(self, event):
+        if not self.game_active:
+            if event.keysym.lower() == 'r':
+                self.__init__(self.root) # Reset game
+            return
+
+        cos_a = math.cos(self.player_angle)
+        sin_a = math.sin(self.player_angle)
+        
+        if event.keysym in ['w', 'Up']:
+            nx, ny = self.player_x + cos_a * self.move_speed, self.player_y + sin_a * self.move_speed
+            if MAP[int(ny / TILE_SIZE)][int(nx / TILE_SIZE)] == 0:
+                self.player_x, self.player_y = nx, ny
+        elif event.keysym in ['s', 'Down']:
+            nx, ny = self.player_x - cos_a * self.move_speed, self.player_y - sin_a * self.move_speed
+            if MAP[int(ny / TILE_SIZE)][int(nx / TILE_SIZE)] == 0:
+                self.player_x, self.player_y = nx, ny
+        elif event.keysym in ['a', 'Left']:
+            self.player_angle -= self.turn_speed
+        elif event.keysym in ['d', 'Right']:
+            self.player_angle += self.turn_speed
+        elif event.keysym == 'space':
+            if not self.is_shooting:
+                self.shoot()
+
+    def shoot(self):
+        self.is_shooting = True
+        
+        # Check hitting nearest facing enemy
+        hit_enemy = None
+        closest_diff = 0.15 # Crosshair sensitivity window
+        
+        for enemy in self.enemies:
+            if not enemy.alive: continue
+            dx, dy = enemy.x - self.player_x, enemy.y - self.player_y
+            angle = math.atan2(dy, dx) - self.player_angle
+            while angle > math.pi: angle -= 2 * math.pi
+            while angle < -math.pi: angle += 2 * math.pi
+            
+            if abs(angle) < closest_diff:
+                hit_enemy = enemy
+                
+        if hit_enemy:
+            hit_enemy.alive = False
+            self.score += 100
+            
+            # If all dead, spawn a harder wave
+            if all(not e.alive for e in self.enemies):
+                self.spawn_enemies(len(self.enemies) + 1)
+                
+        self.root.after(120, self.stop_shooting)
+
+    def stop_shooting(self):
+        self.is_shooting = False
+
+    def cast_rays(self):
+        wall_distances = [9999] * CASTED_RAYS
+        start_angle = self.player_angle - HALF_FOV
+        
+        # 1. Render Environment Walls
+        for ray in range(CASTED_RAYS):
+            current_angle = start_angle + ray * STEP_ANGLE
+            cos_a = math.cos(current_angle)
+            sin_a = math.sin(current_angle)
+            
+            for depth in range(1, 800):
+                target_x = self.player_x + cos_a * depth
+                target_y = self.player_y + sin_a * depth
+                
+                col, row = int(target_x / TILE_SIZE), int(target_y / TILE_SIZE)
+                if MAP[row][col] == 1:
+                    dist = depth * math.cos(current_angle - self.player_angle)
+                    wall_distances[ray] = dist
+                    
+                    wall_height = min(SCREEN_HEIGHT, (TILE_SIZE * SCREEN_HEIGHT) / (dist + 0.0001))
+                    color_val = max(40, min(180, int(220 - (dist * 0.35))))
+                    color = f"#{color_val:02x}{color_val:02x}{color_val:02x}"
+                    
+                    x_start = ray * SCALE
+                    y_start = (SCREEN_HEIGHT / 2) - (wall_height / 2)
+                    self.canvas.create_rectangle(x_start, y_start, x_start + SCALE, y_start + wall_height, fill=color, outline="")
+                    break
+                    
+        # 2. Render Active Enemies (Sorted by distance so closer ones draw on top)
+        active_enemies = [e for e in self.enemies if e.alive]
+        active_enemies.sort(key=lambda e: math.sqrt((e.x-self.player_x)**2 + (e.y-self.player_y)**2), reverse=True)
+        
+        for enemy in active_enemies:
+            dx, dy = enemy.x - self.player_x, enemy.y - self.player_y
+            dist = math.sqrt(dx*dx + dy*dy)
+            
+            # Deal damage if enemy gets too close
+            if dist < 25:
+                self.hp -= 0.5
+                if self.hp <= 0:
+                    self.hp = 0
+                    self.game_active = False
+
+            sprite_angle = math.atan2(dy, dx) - self.player_angle
+            while sprite_angle > math.pi: sprite_angle -= 2 * math.pi
+            while sprite_angle < -math.pi: sprite_angle += 2 * math.pi
+            
+            if abs(sprite_angle) < HALF_FOV and dist > 10:
+                screen_x = int((SCREEN_WIDTH / 2) + (math.tan(sprite_angle) * (SCREEN_WIDTH / 2)))
+                sprite_size = min(SCREEN_HEIGHT, int((TILE_SIZE * SCREEN_HEIGHT) / dist))
+                
+                ray_idx = int((screen_x / SCREEN_WIDTH) * CASTED_RAYS)
+                if 0 <= ray_idx < CASTED_RAYS and wall_distances[ray_idx] > dist:
+                    sx = screen_x - sprite_size // 2
+                    sy = (SCREEN_HEIGHT // 2) - sprite_size // 2
+                    
+                    # Enemy body mapping
+                    self.canvas.create_rectangle(sx, sy, sx + sprite_size, sy + sprite_size, fill="#cc1111", outline="#550000", width=2)
+                    # Angry Eye
+                    eye_w = max(2, sprite_size // 5)
+                    self.canvas.create_rectangle(screen_x - eye_w, SCREEN_HEIGHT//2 - eye_w, screen_x + eye_w, SCREEN_HEIGHT//2, fill="yellow")
+
+    def draw_ui(self):
+        # Sky and Floor Tints
+        self.canvas.create_rectangle(0, SCREEN_HEIGHT/2, SCREEN_WIDTH, SCREEN_HEIGHT, fill="#1c1c1c", tags="bg")
+        self.canvas.create_rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT/2, fill="#0d0d0d", tags="bg")
+        self.canvas.tag_lower("bg")
+        
+        # Heads Up Display (HUD)
+        self.canvas.create_text(70, 20, text=f"HP: {int(self.hp)}%", fill="red", font=("Courier", 16, "bold"))
+        self.canvas.create_text(SCREEN_WIDTH - 90, 20, text=f"SCORE: {self.score}", fill="white", font=("Courier", 16, "bold"))
+        
+        # Crosshair
+        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+        cross_color = "white" if self.is_shooting else "lightgreen"
+        self.canvas.create_line(cx - 8, cy, cx + 8, cy, fill=cross_color, width=2)
+        self.canvas.create_line(cx, cy - 8, cx, cy + 8, fill=cross_color, width=2)
+        
+        # Animated blaster gun
+        if self.is_shooting:
+            self.canvas.create_polygon(cx-10, SCREEN_HEIGHT, cx, SCREEN_HEIGHT-110, cx+10, SCREEN_HEIGHT, fill="purple", outline="white")
+            self.canvas.create_oval(cx-25, SCREEN_HEIGHT-140, cx+25, SCREEN_HEIGHT-90, fill="cyan", outline="")
+        else:
+            self.canvas.create_polygon(cx-15, SCREEN_HEIGHT, cx, SCREEN_HEIGHT-90, cx+15, SCREEN_HEIGHT, fill="darkgray", outline="black")
+
+        # Game Over Overlay
+        if not self.game_active:
+            self.canvas.create_rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, fill="#330000", stipple="gray50")
+            self.canvas.create_text(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 20, text="GAME OVER", fill="red", font=("Courier", 36, "bold"))
+            self.canvas.create_text(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 30, text="Press 'R' to Restart", fill="white", font=("Courier", 16))
+
+    def game_loop(self):
+        if self.game_active:
+            # Update enemy positions
+            for enemy in self.enemies:
+                enemy.update(self.player_x, self.player_y)
+                
+            self.canvas.delete("all")
+            self.cast_rays()
+            self.draw_ui()
+            self.root.after(30, self.game_loop)
+        else:
+            # Keep UI rendering once on death
+            self.draw_ui()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    game = FPSGame(root)
+    root.mainloop()
