@@ -1,0 +1,303 @@
+"""
+Tank Shooter
+------------
+A simple tank shooting game built with Tkinter (no pygame required).
+
+Controls:
+  LEFT / RIGHT arrows  - move your tank
+  SPACE                - fire a bullet
+  P                     - pause / resume
+  R                     - restart after game over
+
+Goal: Destroy enemy tanks before they reach the bottom or collide with you.
+You have 3 lives. Score points for every enemy destroyed.
+"""
+
+import tkinter as tk
+import random
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+WIDTH, HEIGHT = 800, 600
+PLAYER_W, PLAYER_H = 50, 30
+ENEMY_W, ENEMY_H = 40, 26
+BULLET_W, BULLET_H = 4, 12
+
+PLAYER_SPEED = 8
+BULLET_SPEED = 12
+ENEMY_BULLET_SPEED = 7
+
+ENEMY_SPAWN_MS = 1400          # how often a new enemy appears
+ENEMY_FIRE_CHANCE = 0.02       # chance per tick an enemy fires
+GAME_TICK_MS = 20              # ~50 FPS
+
+
+class Tank:
+    def __init__(self, canvas, x, y, w, h, color, is_player=False):
+        self.canvas = canvas
+        self.w, self.h = w, h
+        self.is_player = is_player
+        self.speed_y = random.uniform(1.2, 2.6) if not is_player else 0
+        self.id = canvas.create_rectangle(
+            x, y, x + w, y + h, fill=color, outline="black", width=2
+        )
+        # turret
+        cx = x + w / 2
+        turret_y0 = y - 10 if is_player else y + h
+        turret_y1 = y if is_player else y + h + 10
+        self.turret = canvas.create_rectangle(
+            cx - 3, turret_y0, cx + 3, turret_y1, fill="black"
+        )
+
+    def coords(self):
+        return self.canvas.coords(self.id)
+
+    def move(self, dx, dy):
+        self.canvas.move(self.id, dx, dy)
+        self.canvas.move(self.turret, dx, dy)
+
+    def center_x(self):
+        x0, y0, x1, y1 = self.coords()
+        return (x0 + x1) / 2
+
+    def delete(self):
+        self.canvas.delete(self.id)
+        self.canvas.delete(self.turret)
+
+
+class Bullet:
+    def __init__(self, canvas, x, y, dy, color="yellow"):
+        self.canvas = canvas
+        self.dy = dy
+        self.id = canvas.create_rectangle(
+            x - BULLET_W / 2, y, x + BULLET_W / 2, y + BULLET_H, fill=color, outline=""
+        )
+
+    def coords(self):
+        return self.canvas.coords(self.id)
+
+    def move(self):
+        self.canvas.move(self.id, 0, self.dy)
+
+    def delete(self):
+        self.canvas.delete(self.id)
+
+
+class TankGame:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Tank Shooter")
+        self.canvas = tk.Canvas(root, width=WIDTH, height=HEIGHT, bg="#1e3d1e")
+        self.canvas.pack()
+
+        # HUD
+        self.score_text = self.canvas.create_text(
+            10, 10, anchor="nw", fill="white", font=("Consolas", 14),
+            text="Score: 0"
+        )
+        self.lives_text = self.canvas.create_text(
+            WIDTH - 10, 10, anchor="ne", fill="white", font=("Consolas", 14),
+            text="Lives: 3"
+        )
+
+        self.reset_state()
+
+        self.root.bind("<KeyPress>", self.on_key_press)
+        self.root.bind("<KeyRelease>", self.on_key_release)
+
+        self.spawn_enemy()
+        self.game_loop()
+
+    # -----------------------------------------------------------------
+    def reset_state(self):
+        self.canvas.delete("all")
+        self.score_text = self.canvas.create_text(
+            10, 10, anchor="nw", fill="white", font=("Consolas", 14),
+            text="Score: 0"
+        )
+        self.lives_text = self.canvas.create_text(
+            WIDTH - 10, 10, anchor="ne", fill="white", font=("Consolas", 14),
+            text="Lives: 3"
+        )
+
+        self.player = Tank(
+            self.canvas, WIDTH / 2 - PLAYER_W / 2, HEIGHT - 60,
+            PLAYER_W, PLAYER_H, "#3399ff", is_player=True
+        )
+        self.enemies = []
+        self.player_bullets = []
+        self.enemy_bullets = []
+
+        self.score = 0
+        self.lives = 3
+        self.left_pressed = False
+        self.right_pressed = False
+        self.paused = False
+        self.game_over = False
+
+        self.draw_ground()
+
+    def draw_ground(self):
+        self.canvas.create_line(0, HEIGHT - 20, WIDTH, HEIGHT - 20, fill="#0f240f", width=3)
+
+    # -----------------------------------------------------------------
+    def on_key_press(self, event):
+        key = event.keysym
+        if key == "Left":
+            self.left_pressed = True
+        elif key == "Right":
+            self.right_pressed = True
+        elif key == "space":
+            self.fire_player_bullet()
+        elif key.lower() == "p":
+            self.paused = not self.paused
+        elif key.lower() == "r" and self.game_over:
+            self.reset_state()
+            self.spawn_enemy()
+
+    def on_key_release(self, event):
+        key = event.keysym
+        if key == "Left":
+            self.left_pressed = False
+        elif key == "Right":
+            self.right_pressed = False
+
+    # -----------------------------------------------------------------
+    def fire_player_bullet(self):
+        if self.game_over or self.paused:
+            return
+        x = self.player.center_x()
+        y0, y1 = self.player.coords()[1], self.player.coords()[1]
+        bullet = Bullet(self.canvas, x, self.player.coords()[1] - 10, -BULLET_SPEED, "yellow")
+        self.player_bullets.append(bullet)
+
+    def fire_enemy_bullet(self, enemy):
+        x = enemy.center_x()
+        y = enemy.coords()[3]
+        bullet = Bullet(self.canvas, x, y, ENEMY_BULLET_SPEED, "red")
+        self.enemy_bullets.append(bullet)
+
+    # -----------------------------------------------------------------
+    def spawn_enemy(self):
+        if not self.game_over:
+            x = random.randint(10, WIDTH - ENEMY_W - 10)
+            enemy = Tank(self.canvas, x, 20, ENEMY_W, ENEMY_H, "#cc3333")
+            self.enemies.append(enemy)
+        self.root.after(ENEMY_SPAWN_MS, self.spawn_enemy)
+
+    # -----------------------------------------------------------------
+    def rects_overlap(self, a, b):
+        ax0, ay0, ax1, ay1 = a
+        bx0, by0, bx1, by1 = b
+        return ax0 < bx1 and ax1 > bx0 and ay0 < by1 and ay1 > by0
+
+    # -----------------------------------------------------------------
+    def game_loop(self):
+        if not self.paused and not self.game_over:
+            self.update()
+        self.root.after(GAME_TICK_MS, self.game_loop)
+
+    def update(self):
+        # --- player movement ---
+        dx = 0
+        if self.left_pressed:
+            dx -= PLAYER_SPEED
+        if self.right_pressed:
+            dx += PLAYER_SPEED
+        x0, y0, x1, y1 = self.player.coords()
+        new_x0 = x0 + dx
+        new_x1 = x1 + dx
+        if new_x0 < 0:
+            dx = -x0
+        elif new_x1 > WIDTH:
+            dx = WIDTH - x1
+        self.player.move(dx, 0)
+
+        # --- move player bullets ---
+        for b in self.player_bullets[:]:
+            b.move()
+            coords = b.coords()
+            if not coords or coords[1] < 0:
+                b.delete()
+                self.player_bullets.remove(b)
+
+        # --- move enemy bullets ---
+        for b in self.enemy_bullets[:]:
+            b.move()
+            coords = b.coords()
+            if not coords or coords[1] > HEIGHT:
+                b.delete()
+                self.enemy_bullets.remove(b)
+
+        # --- move enemies, maybe fire, check if reached bottom ---
+        for e in self.enemies[:]:
+            e.move(0, e.speed_y)
+            coords = e.coords()
+            if coords and coords[3] >= HEIGHT - 20:
+                # reached the ground -> costs a life
+                e.delete()
+                self.enemies.remove(e)
+                self.lose_life()
+                continue
+            if random.random() < ENEMY_FIRE_CHANCE:
+                self.fire_enemy_bullet(e)
+
+        # --- collisions: player bullets vs enemies ---
+        for b in self.player_bullets[:]:
+            b_coords = b.coords()
+            if not b_coords:
+                continue
+            for e in self.enemies[:]:
+                e_coords = e.coords()
+                if e_coords and self.rects_overlap(b_coords, e_coords):
+                    b.delete()
+                    if b in self.player_bullets:
+                        self.player_bullets.remove(b)
+                    e.delete()
+                    self.enemies.remove(e)
+                    self.score += 10
+                    self.canvas.itemconfig(self.score_text, text=f"Score: {self.score}")
+                    break
+
+        # --- collisions: enemy bullets vs player ---
+        player_coords = self.player.coords()
+        for b in self.enemy_bullets[:]:
+            b_coords = b.coords()
+            if b_coords and player_coords and self.rects_overlap(b_coords, player_coords):
+                b.delete()
+                self.enemy_bullets.remove(b)
+                self.lose_life()
+
+        # --- collisions: enemy tank vs player tank ---
+        for e in self.enemies[:]:
+            e_coords = e.coords()
+            if e_coords and player_coords and self.rects_overlap(e_coords, player_coords):
+                e.delete()
+                self.enemies.remove(e)
+                self.lose_life()
+
+    # -----------------------------------------------------------------
+    def lose_life(self):
+        self.lives -= 1
+        self.canvas.itemconfig(self.lives_text, text=f"Lives: {self.lives}")
+        if self.lives <= 0:
+            self.trigger_game_over()
+
+    def trigger_game_over(self):
+        self.game_over = True
+        self.canvas.create_text(
+            WIDTH / 2, HEIGHT / 2 - 20, fill="white", font=("Consolas", 32, "bold"),
+            text="GAME OVER"
+        )
+        self.canvas.create_text(
+            WIDTH / 2, HEIGHT / 2 + 20, fill="white", font=("Consolas", 16),
+            text=f"Final Score: {self.score}   —   Press R to restart"
+        )
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.resizable(False, False)
+    game = TankGame(root)
+    root.mainloop()
