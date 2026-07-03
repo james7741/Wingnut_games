@@ -1,0 +1,314 @@
+import pygame
+import random
+import sys
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+WIDTH, HEIGHT = 800, 600  #change the screen size here
+PLAYER_W, PLAYER_H = 80, 45  #change your size here
+ENEMY_W, ENEMY_H = 80, 45  #change the enemy size here
+BULLET_W, BULLET_H = 4, 12  #change the bullet size here
+
+PLAYER_SPEED = 8  #change how quickly you can move here
+BULLET_SPEED = 12  #change how quickly your bullets move here
+ENEMY_BULLET_SPEED = 5  #change how quickly the enemy bullets move
+
+ENEMY_SPAWN_MS = 2000   #change how quickly enemies spawn (higher number here=lower spawn rate)
+ENEMY_FIRE_CHANCE = 0.0175   #change how much enemies will shoot at you
+FPS = 60
+
+
+# ---------------------------------------------------------------------------
+# Tank
+# ---------------------------------------------------------------------------
+class Tank:
+    def __init__(self, x, y, w, h, color, is_player=False, image=None):
+        self.image=image
+        self.is_player = is_player
+        self.speed_y = random.uniform(1.2, 2.6) if not is_player else 0
+
+        self.rect = pygame.Rect(x, y, w, h)
+
+        # turret rectangle
+        if image:
+            cx=x+image.get_width() //2
+        else:
+            cx=x+w // 2
+        if image:
+            img_h=image.get_height()
+            if is_player:
+                self.turret=pygame.Rect(cx-3, y-10, 6, 10)
+            else:
+                self.turret=pygame.Rect(cx-3, y+img_h, 6, 10)
+        else:
+            if is_player:
+                self.turret=pygame.Rect(cx-3, y-10, 6, 10)
+            else:
+                self.turret=pygame.Rect(cx-3, y+h, 6, 10)
+        self.color = color
+
+    def move(self, dx, dy):
+        self.rect.x += dx
+        self.rect.y += dy
+        self.turret.x += dx
+        self.turret.y += dy
+
+    def center_x(self):
+        return self.rect.centerx
+
+    def draw(self, screen):
+        if self.image:
+           screen.blit(self.image, self.rect)
+        else:
+            pygame.draw.rect(screen, self.color, self.rect)
+        pygame.draw.rect(screen, (0, 0, 0), self.turret)
+
+    def delete(self):
+        # Pygame doesn't need explicit delete; handled by removing from lists
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Bullet
+# ---------------------------------------------------------------------------
+class Bullet:
+    def __init__(self, x, y, dy, color="yellow"):
+        self.dy = dy
+        self.rect = pygame.Rect(x - BULLET_W // 2, y, BULLET_W, BULLET_H)
+        self.color = color
+
+    def move(self):
+        self.rect.y += self.dy
+
+    def draw(self, screen):
+        pygame.draw.rect(screen, self.color, self.rect)
+
+
+# ---------------------------------------------------------------------------
+# Game
+# ---------------------------------------------------------------------------
+class TankGame:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Tank Shooter (Pygame)")
+        self.clock=pygame.time.Clock()
+        self.bg_img=pygame.image.load("bg24.jpeg").convert_alpha()    #change the background here (all image files must be in the same folder as the game file, make sure image file types are correct)
+        self.player_img = pygame.image.load("bg59.jpeg").convert_alpha()   #change your tank image here
+        self.enemy_img = pygame.image.load("bg09.jpeg").convert_alpha()  #change enemy tank image here
+        self.player_img = pygame.transform.scale(
+            pygame.image.load("bg59.jpeg").convert_alpha(),    #make sure your tank is updated here as well
+            (PLAYER_W, PLAYER_H)
+        )
+        self.enemy_img = pygame.transform.scale(
+            pygame.image.load("bg09.jpeg").convert_alpha(),   #make sure the enemy tank is updated here as well
+            (ENEMY_W, ENEMY_H)
+        )
+        self.font = pygame.font.SysFont("Consolas", 20)
+        self.big_font = pygame.font.SysFont("Consolas", 32)
+
+        self.reset_state()
+
+        # enemy spawn timer
+        pygame.time.set_timer(pygame.USEREVENT + 1, ENEMY_SPAWN_MS)
+
+    # -----------------------------------------------------------------
+    def reset_state(self):
+        self.player = Tank(
+            WIDTH // 2 - PLAYER_W // 2,
+            HEIGHT - 60,
+            PLAYER_W, PLAYER_H,
+            (51, 153, 255),
+            True,
+            image=self.player_img
+        )
+
+        self.enemies = []
+        self.player_bullets = []
+        self.enemy_bullets = []
+
+        self.score = 0
+        self.lives = 3
+        self.left_pressed = False
+        self.right_pressed = False
+        self.paused = False
+        self.game_over = False
+
+    # -----------------------------------------------------------------
+    def fire_player_bullet(self):
+        if self.game_over or self.paused:
+            return
+        x = self.player.center_x()
+        y = self.player.rect.y - 10
+        self.player_bullets.append(Bullet(x, y, -BULLET_SPEED, "yellow"))
+
+    def fire_enemy_bullet(self, enemy):
+        x = enemy.center_x()
+        y = enemy.rect.bottom
+        self.enemy_bullets.append(Bullet(x, y, ENEMY_BULLET_SPEED, "red"))
+
+    # -----------------------------------------------------------------
+    def spawn_enemy(self):
+        x = random.randint(10, WIDTH - ENEMY_W - 10)
+        enemy = Tank(
+            x, 20,
+            ENEMY_W, ENEMY_H,
+            (204, 51, 51),
+            False,
+            image=self.enemy_img
+        )
+        self.enemies.append(enemy)
+
+    # -----------------------------------------------------------------
+    def rects_overlap(self, a, b):
+        return a.colliderect(b)
+
+    # -----------------------------------------------------------------
+    def lose_life(self):
+        self.lives -= 1
+        if self.lives <= 0:
+            self.trigger_game_over()
+
+    def trigger_game_over(self):
+        self.game_over = True
+
+    # -----------------------------------------------------------------
+    def update(self):
+        if self.paused or self.game_over:
+            return
+
+        # --- player movement ---
+        dx = 0
+        if self.left_pressed:
+            dx -= PLAYER_SPEED
+        if self.right_pressed:
+            dx += PLAYER_SPEED
+
+        # clamp to screen
+        if self.player.rect.left + dx < 0:
+            dx = -self.player.rect.left
+        if self.player.rect.right + dx > WIDTH:
+            dx = WIDTH - self.player.rect.right
+
+        self.player.move(dx, 0)
+
+        # --- move bullets ---
+        for b in self.player_bullets[:]:
+            b.move()
+            if b.rect.bottom < 0:
+                self.player_bullets.remove(b)
+
+        for b in self.enemy_bullets[:]:
+            b.move()
+            if b.rect.top > HEIGHT:
+                self.enemy_bullets.remove(b)
+
+        # --- move enemies ---
+        for e in self.enemies[:]:
+            e.move(0, e.speed_y)
+
+            if e.rect.bottom >= HEIGHT - 20:
+                self.enemies.remove(e)
+                self.lose_life()
+                continue
+
+            if random.random() < ENEMY_FIRE_CHANCE:
+                self.fire_enemy_bullet(e)
+
+        # --- collisions: player bullets vs enemies ---
+        for b in self.player_bullets[:]:
+            for e in self.enemies[:]:
+                if self.rects_overlap(b.rect, e.rect):
+                    self.player_bullets.remove(b)
+                    self.enemies.remove(e)
+                    self.score += 10
+                    break
+
+        # --- collisions: enemy bullets vs player ---
+        for b in self.enemy_bullets[:]:
+            if self.rects_overlap(b.rect, self.player.rect):
+                self.enemy_bullets.remove(b)
+                self.lose_life()
+
+        # --- collisions: enemy tank vs player ---
+        for e in self.enemies[:]:
+            if self.rects_overlap(e.rect, self.player.rect):
+                self.enemies.remove(e)
+                self.lose_life()
+
+    # -----------------------------------------------------------------
+    def draw(self):
+        self.screen.blit(self.bg_img, ((WIDTH - self.bg_img.get_width()) // 2,
+                                       (HEIGHT - self.bg_img.get_height()) // 2))
+
+        # ground line
+        pygame.draw.line(self.screen, (15, 36, 15), (0, HEIGHT - 20), (WIDTH, HEIGHT - 20), 3)
+
+        # HUD
+        score_surf = self.font.render(f"Score: {self.score}", True, (255, 255, 255))
+        lives_surf = self.font.render(f"Lives: {self.lives}", True, (255, 255, 255))
+        self.screen.blit(score_surf, (10, 10))
+        self.screen.blit(lives_surf, (WIDTH - 120, 10))
+
+        # draw player
+        self.player.draw(self.screen)
+
+        # draw enemies
+        for e in self.enemies:
+            e.draw(self.screen)
+
+        # draw bullets
+        for b in self.player_bullets:
+            b.draw(self.screen)
+        for b in self.enemy_bullets:
+            b.draw(self.screen)
+
+        # game over screen
+        if self.game_over:
+            txt = self.big_font.render("GAME OVER", True, (255, 255, 255))
+            txt2 = self.font.render(f"Final Score: {self.score} — Press R to restart",
+                                    True, (255, 255, 255))
+            self.screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+            self.screen.blit(txt2, (WIDTH // 2 - txt2.get_width() // 2, HEIGHT // 2 + 10))
+
+        pygame.display.flip()
+
+    # -----------------------------------------------------------------
+    def run(self):
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+
+                if event.type == pygame.USEREVENT + 1:
+                    if not self.game_over:
+                        self.spawn_enemy()
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_LEFT:
+                        self.left_pressed = True
+                    if event.key == pygame.K_RIGHT:
+                        self.right_pressed = True
+                    if event.key == pygame.K_SPACE:
+                        self.fire_player_bullet()
+                    if event.key == pygame.K_p:
+                        self.paused = not self.paused
+                    if event.key == pygame.K_r and self.game_over:
+                        self.reset_state()
+
+                if event.type == pygame.KEYUP:
+                    if event.key == pygame.K_LEFT:
+                        self.left_pressed = False
+                    if event.key == pygame.K_RIGHT:
+                        self.right_pressed = False
+
+            self.update()
+            self.draw()
+            self.clock.tick(FPS)
+
+
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    TankGame().run()
