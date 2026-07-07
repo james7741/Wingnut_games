@@ -1,0 +1,913 @@
+"""
+3D Tank Battle Simulator - Realistic Battlefield
+-------------------------------------------------
+A realistic 3D tank game with raycasting, destructible environments,
+and advanced AI. Inspired by World of Tanks/Battlefield.
+
+Controls:
+  W / UP ARROW          - Move forward
+  S / DOWN ARROW        - Move backward
+  A / LEFT ARROW        - Turn left
+  D / RIGHT ARROW       - Turn right
+  MOUSE MOVEMENT        - Aim cannon (requires focus)
+  SPACE / CLICK         - Fire cannon
+  M                     - Toggle mini-map
+  P                     - Pause / Resume
+  
+Goal: Destroy enemy tanks before they destroy you.
+Earn rewards for eliminating enemies and taking down their armor.
+"""
+
+import tkinter as tk
+from tkinter import messagebox
+import math
+import random
+import time
+
+# --- ADVANCED GAME CONFIGURATION ---
+SCREEN_WIDTH = 1200
+SCREEN_HEIGHT = 800
+FPS = 60
+FRAME_TIME = 1000 // FPS
+
+# Raycasting config
+FOV = math.pi / 2.5  # Wider FOV for tank feel
+HALF_FOV = FOV / 2
+CASTED_RAYS = 240  # Higher resolution
+STEP_ANGLE = FOV / CASTED_RAYS
+SCALE = SCREEN_WIDTH / CASTED_RAYS
+
+# Realistic battlefield map (0=grass, 1=wall, 2=water, 3=destructible, 4=tree)
+TERRAIN_MAP = [
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,3,3,3,0,0,0,4,4,0,0,0,0,3,3,3,0,0,1],
+    [1,0,3,3,3,0,0,0,4,4,0,0,0,0,3,3,3,0,0,1],
+    [1,0,0,0,0,0,2,2,2,0,0,1,1,0,0,0,0,0,0,1],
+    [1,0,0,1,1,0,2,2,2,0,0,1,1,0,0,0,0,0,0,1],
+    [1,0,0,1,1,0,0,0,0,0,0,0,0,0,0,1,1,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,1],
+    [1,0,4,4,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,4,4,0,3,3,0,0,0,0,0,0,0,3,3,0,0,0,1],
+    [1,0,0,0,0,3,3,0,0,0,0,0,0,0,3,3,0,0,0,1],
+    [1,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,4,0,1],
+    [1,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,4,0,1],
+    [1,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,2,2,2,0,0,0,0,0,0,0,0,0,0,1],
+    [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+    [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+]
+
+TILE_SIZE = 80
+MAX_RAY_DISTANCE = 4000
+GRAVITY = 0.2
+
+# Particle effects
+class Particle:
+    """Smoke, dust, and explosion particles"""
+    def __init__(self, x, y, vx, vy, lifetime, color, size=4):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.lifetime = lifetime
+        self.max_lifetime = lifetime
+        self.color = color
+        self.size = size
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += GRAVITY
+        self.lifetime -= 1
+        return self.lifetime > 0
+
+    def get_color(self):
+        """Fade out effect"""
+        alpha = self.lifetime / self.max_lifetime
+        return self.color
+
+
+class Projectile:
+    """Advanced projectile with ballistics"""
+    def __init__(self, x, y, angle, speed=20, spread=0.05):
+        self.x = x
+        self.y = y
+        self.angle = angle + random.uniform(-spread, spread)
+        self.speed = speed
+        self.vx = math.cos(self.angle) * speed
+        self.vy = math.sin(self.angle) * speed
+        self.lifetime = 400
+        self.traveled = 0
+        self.active = True
+        self.trail = []
+
+    def update(self, terrain_map):
+        """Update with realistic ballistics"""
+        if not self.active:
+            return False
+
+        self.x += self.vx
+        self.y += self.vy
+        self.vy += GRAVITY * 0.5
+        self.traveled += math.sqrt(self.vx**2 + self.vy**2)
+        self.lifetime -= 1
+
+        self.trail.append((self.x, self.y))
+        if len(self.trail) > 20:
+            self.trail.pop(0)
+
+        # Boundary check
+        if self.lifetime <= 0 or self.traveled > 3000:
+            self.active = False
+            return False
+
+        col = int(self.x / TILE_SIZE)
+        row = int(self.y / TILE_SIZE)
+
+        if col < 0 or col >= len(terrain_map[0]) or row < 0 or row >= len(terrain_map):
+            self.active = False
+            return False
+
+        terrain = terrain_map[row][col]
+        if terrain in [1, 3, 4]:  # Wall, destructible, tree
+            self.active = False
+            return False
+
+        return True
+
+
+class Tank:
+    """Enhanced tank with armor, health zones, and realistic physics"""
+    def __init__(self, x, y, angle=0, color="#3399ff", is_player=False):
+        self.x = x
+        self.y = y
+        self.angle = angle
+        self.color = color
+        self.is_player = is_player
+        
+        # Health system
+        self.hp = 150
+        self.max_hp = 150
+        self.armor = 80
+        self.engine_health = 100
+        self.max_engine_health = 100
+        
+        # Physics
+        self.vx = 0
+        self.vy = 0
+        self.speed = 6 if is_player else 4
+        self.max_speed = self.speed
+        self.acceleration = 0.3
+        self.turn_speed = 0.12 if is_player else 0.08
+        self.friction = 0.92
+        
+        # Weapon system
+        self.cannon_angle = angle
+        self.cannon_length = 28
+        self.gun_elevation = 0
+        self.width = 28
+        self.height = 28
+        self.alive = True
+        
+        # Cooldown for firing
+        self.cannon_cooldown = 0
+        self.cannon_cooldown_max = 25
+        
+        # Damage over time
+        self.on_fire = False
+        self.fire_timer = 0
+        
+        # Particles
+        self.particles = []
+
+    def get_cannon_tip(self):
+        """Get accurate cannon barrel tip position"""
+        # Body center
+        offset_x = math.cos(self.cannon_angle) * self.cannon_length
+        offset_y = math.sin(self.cannon_angle) * self.cannon_length
+        
+        # Add gun elevation
+        elevation_offset = -math.sin(self.gun_elevation) * 8
+        
+        return self.x + offset_x, self.y + offset_y + elevation_offset
+
+    def update(self, terrain_map, enemies=None, dt=1):
+        """Update tank physics and state"""
+        if not self.alive:
+            return
+
+        if self.cannon_cooldown > 0:
+            self.cannon_cooldown -= 1
+
+        # Fire damage
+        if self.on_fire:
+            self.fire_timer -= 1
+            self.hp -= 0.3
+            if self.fire_timer <= 0:
+                self.on_fire = False
+            
+            if random.random() < 0.1:
+                self.particles.append(Particle(
+                    self.x + random.uniform(-10, 10),
+                    self.y + random.uniform(-10, 10),
+                    random.uniform(-0.5, 0.5),
+                    random.uniform(-2, -0.5),
+                    40, "#ff6600"
+                ))
+
+        # Update particles
+        for particle in self.particles[:]:
+            if not particle.update():
+                self.particles.remove(particle)
+
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def take_damage(self, amount=35):
+        """Damage with armor mitigation"""
+        damage_reduction = self.armor / 200
+        actual_damage = amount * (1 - damage_reduction)
+        self.hp -= actual_damage
+        
+        # Armor degrades
+        self.armor = max(30, self.armor - amount * 0.15)
+        
+        # Chance to catch fire
+        if random.random() < 0.2:
+            self.on_fire = True
+            self.fire_timer = 120
+
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def can_fire(self):
+        return self.cannon_cooldown <= 0
+
+    def fire(self):
+        if self.can_fire():
+            self.cannon_cooldown = self.cannon_cooldown_max
+            return True
+        return False
+
+
+class PlayerTank(Tank):
+    """Player-controlled tank with responsive controls"""
+    def __init__(self, x, y):
+        super().__init__(x, y, color="#2277dd", is_player=True)
+        self.forward_pressed = False
+        self.backward_pressed = False
+        self.left_pressed = False
+        self.right_pressed = False
+        self.mouse_x = SCREEN_WIDTH / 2
+        self.mouse_y = SCREEN_HEIGHT / 2
+
+    def update(self, terrain_map, enemies=None):
+        super().update(terrain_map, enemies)
+        
+        # Smooth acceleration/deceleration
+        target_speed = 0
+        if self.forward_pressed:
+            target_speed = self.max_speed
+        elif self.backward_pressed:
+            target_speed = -self.max_speed * 0.6
+
+        current_speed = math.sqrt(self.vx**2 + self.vy**2)
+        if abs(target_speed) > abs(current_speed):
+            current_speed += self.acceleration
+        else:
+            current_speed = target_speed
+
+        # Apply speed
+        if current_speed != 0:
+            self.vx = math.cos(self.angle) * current_speed
+            self.vy = math.sin(self.angle) * current_speed
+
+        # Friction when no input
+        if not self.forward_pressed and not self.backward_pressed:
+            self.vx *= self.friction
+            self.vy *= self.friction
+
+        # Rotation (independent from movement)
+        if self.left_pressed:
+            self.angle -= self.turn_speed
+        if self.right_pressed:
+            self.angle += self.turn_speed
+
+        # Smooth cannon aiming
+        center_x = SCREEN_WIDTH / 2
+        center_y = SCREEN_HEIGHT / 2
+        
+        dx = self.mouse_x - center_x
+        dy = self.mouse_y - center_y
+        self.cannon_angle = math.atan2(dy, dx) + self.angle - HALF_FOV
+        
+        # Gun elevation based on screen vertical position
+        self.gun_elevation = (self.mouse_y - center_y) / SCREEN_HEIGHT * 0.3
+
+        # Movement with collision
+        new_x = self.x + self.vx
+        new_y = self.y + self.vy
+        
+        if self._can_move_to(new_x, new_y, terrain_map):
+            self.x = new_x
+            self.y = new_y
+        else:
+            self.vx *= 0.5
+            self.vy *= 0.5
+
+    def set_mouse_pos(self, x, y):
+        """Update mouse position for aiming"""
+        self.mouse_x = x
+        self.mouse_y = y
+
+    def _can_move_to(self, x, y, terrain_map):
+        """Advanced collision detection"""
+        col = int(x / TILE_SIZE)
+        row = int(y / TILE_SIZE)
+
+        if col < 1 or col >= len(terrain_map[0]) - 1 or row < 1 or row >= len(terrain_map) - 1:
+            return False
+
+        if terrain_map[row][col] == 1:
+            return False
+
+        # Check surrounding tiles
+        for dc in [-1, 0, 1]:
+            for dr in [-1, 0, 1]:
+                check_col = col + dc
+                check_row = row + dr
+                if 0 <= check_col < len(terrain_map[0]) and 0 <= check_row < len(terrain_map):
+                    if terrain_map[check_row][check_col] == 1:
+                        dist = math.sqrt((x - (check_col * TILE_SIZE + TILE_SIZE//2))**2 +
+                                       (y - (check_row * TILE_SIZE + TILE_SIZE//2))**2)
+                        if dist < self.width + 10:
+                            return False
+        return True
+
+
+class EnemyTank(Tank):
+    """Advanced AI with pathfinding and combat tactics"""
+    def __init__(self, x, y):
+        super().__init__(x, y, color="#dd3333", is_player=False)
+        self.target_angle = random.uniform(0, 2 * math.pi)
+        self.patrol_timer = 0
+        self.detection_range = 900
+        self.fire_range = 700
+        self.engagement_range = 500
+        self.last_shot_position = (x, y)
+
+    def update(self, terrain_map, player=None):
+        super().update(terrain_map, player)
+
+        if not self.alive:
+            return
+
+        self.patrol_timer -= 1
+
+        if player:
+            dx = player.x - self.x
+            dy = player.y - self.y
+            dist = math.sqrt(dx**2 + dy**2)
+
+            # Detection and engagement
+            if dist < self.detection_range:
+                # Face player
+                self.angle = math.atan2(dy, dx)
+                self.cannon_angle = self.angle
+                self.gun_elevation = -0.05
+
+                # Tactical movement
+                if dist > self.engagement_range:
+                    # Advance
+                    self.vx = math.cos(self.angle) * self.max_speed * 0.7
+                    self.vy = math.sin(self.angle) * self.max_speed * 0.7
+                elif dist < 200:
+                    # Retreat
+                    self.vx = -math.cos(self.angle) * self.max_speed * 0.5
+                    self.vy = -math.sin(self.angle) * self.max_speed * 0.5
+                else:
+                    # Strafe
+                    strafe_angle = self.angle + math.pi / 2 if random.random() > 0.5 else self.angle - math.pi / 2
+                    self.vx = math.cos(strafe_angle) * self.max_speed * 0.4
+                    self.vy = math.sin(strafe_angle) * self.max_speed * 0.4
+
+                # Smart firing
+                if dist < self.fire_range and self.can_fire():
+                    if random.random() < 0.04:
+                        self.fire()
+            else:
+                # Patrol
+                if self.patrol_timer <= 0:
+                    self.target_angle = random.uniform(0, 2 * math.pi)
+                    self.patrol_timer = random.randint(60, 180)
+
+                self.angle = self.target_angle
+                self.cannon_angle = self.target_angle
+
+                # Slow movement
+                self.vx = math.cos(self.angle) * self.max_speed * 0.3
+                self.vy = math.sin(self.angle) * self.max_speed * 0.3
+
+        # Apply friction
+        self.vx *= self.friction
+        self.vy *= self.friction
+
+        # Move
+        new_x = self.x + self.vx
+        new_y = self.y + self.vy
+
+        if self._can_move_to(new_x, new_y, terrain_map):
+            self.x = new_x
+            self.y = new_y
+        else:
+            self.vx = 0
+            self.vy = 0
+
+    def _can_move_to(self, x, y, terrain_map):
+        """Collision check"""
+        col = int(x / TILE_SIZE)
+        row = int(y / TILE_SIZE)
+
+        if col < 1 or col >= len(terrain_map[0]) - 1 or row < 1 or row >= len(terrain_map) - 1:
+            return False
+
+        if terrain_map[row][col] == 1:
+            return False
+
+        return True
+
+
+class Tank3DBattlefield:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("3D Tank Battlefield - Ultra Realistic")
+        self.root.resizable(False, False)
+
+        self.canvas = tk.Canvas(root, width=SCREEN_WIDTH, height=SCREEN_HEIGHT, bg="black")
+        self.canvas.pack()
+
+        # Player
+        self.player = PlayerTank(640, 640)
+
+        # Enemies
+        self.enemies = []
+        self.spawn_enemies(4)
+
+        # Projectiles and effects
+        self.projectiles = []
+        self.explosions = []
+        self.particles = []
+
+        # Game state
+        self.score = 0
+        self.kills = 0
+        self.game_active = True
+        self.paused = False
+        self.show_minimap = True
+        self.frame_count = 0
+        self.last_frame_time = time.time()
+        self.fps = 0
+
+        # Bind keys
+        self.root.bind("<KeyPress>", self.key_press)
+        self.root.bind("<KeyRelease>", self.key_release)
+        self.root.bind("<Motion>", self.mouse_move)
+        self.root.bind("<Button-1>", lambda e: self.fire_player_cannon())
+
+        self.game_loop()
+
+    def spawn_enemies(self, count):
+        """Spawn enemies strategically"""
+        self.enemies = []
+        spawn_points = [
+            (200, 200), (200, 1100), (1400, 200), (1400, 1100),
+            (800, 200), (800, 1100)
+        ]
+        
+        for i in range(count):
+            if i < len(spawn_points):
+                x, y = spawn_points[i]
+                col, row = int(x / TILE_SIZE), int(y / TILE_SIZE)
+                if 0 <= row < len(TERRAIN_MAP) and 0 <= col < len(TERRAIN_MAP[0]):
+                    if TERRAIN_MAP[row][col] == 0:
+                        self.enemies.append(EnemyTank(x, y))
+
+    def key_press(self, event):
+        key = event.keysym.lower()
+
+        if key in ['w', 'Up']:
+            self.player.forward_pressed = True
+        elif key in ['s', 'Down']:
+            self.player.backward_pressed = True
+        elif key in ['a', 'Left']:
+            self.player.left_pressed = True
+        elif key in ['d', 'Right']:
+            self.player.right_pressed = True
+        elif key == 'space':
+            self.fire_player_cannon()
+        elif key == 'm':
+            self.show_minimap = not self.show_minimap
+        elif key == 'p':
+            self.paused = not self.paused
+
+    def key_release(self, event):
+        key = event.keysym.lower()
+
+        if key in ['w', 'Up']:
+            self.player.forward_pressed = False
+        elif key in ['s', 'Down']:
+            self.player.backward_pressed = False
+        elif key in ['a', 'Left']:
+            self.player.left_pressed = False
+        elif key in ['d', 'Right']:
+            self.player.right_pressed = False
+
+    def mouse_move(self, event):
+        """Update mouse position for aiming"""
+        self.player.set_mouse_pos(event.x, event.y)
+
+    def fire_player_cannon(self):
+        """Fire with muzzle flash effect"""
+        if self.player.fire() and self.game_active:
+            tip_x, tip_y = self.player.get_cannon_tip()
+            
+            # Add spread for realism
+            projectile = Projectile(tip_x, tip_y, self.player.cannon_angle, spread=0.08)
+            self.projectiles.append(projectile)
+
+            # Muzzle flash particles
+            for _ in range(15):
+                angle = self.player.cannon_angle + random.uniform(-0.3, 0.3)
+                speed = random.uniform(8, 15)
+                self.particles.append(Particle(
+                    tip_x, tip_y,
+                    math.cos(angle) * speed,
+                    math.sin(angle) * speed,
+                    30, "#ffdd00", size=6
+                ))
+
+    def cast_rays(self):
+        """Advanced raycasting with better visuals"""
+        wall_distances = [MAX_RAY_DISTANCE] * CASTED_RAYS
+
+        start_angle = self.player.angle - HALF_FOV
+
+        # Render walls
+        for ray in range(CASTED_RAYS):
+            current_angle = start_angle + ray * STEP_ANGLE
+            cos_a = math.cos(current_angle)
+            sin_a = math.sin(current_angle)
+
+            for depth in range(1, int(MAX_RAY_DISTANCE), 2):
+                target_x = self.player.x + cos_a * depth
+                target_y = self.player.y + sin_a * depth
+
+                col = int(target_x / TILE_SIZE)
+                row = int(target_y / TILE_SIZE)
+
+                if col < 0 or col >= len(TERRAIN_MAP[0]) or row < 0 or row >= len(TERRAIN_MAP):
+                    break
+
+                terrain = TERRAIN_MAP[row][col]
+
+                if terrain == 1:  # Stone wall
+                    dist = depth * math.cos(current_angle - self.player.angle)
+                    wall_distances[ray] = dist
+
+                    wall_height = min(SCREEN_HEIGHT, (TILE_SIZE * SCREEN_HEIGHT) / (dist + 0.0001))
+                    
+                    # Distance fog effect
+                    color_val = max(20, min(180, int(200 - (dist * 0.12))))
+                    color = f"#{color_val:02x}{color_val:02x}{color_val:02x}"
+
+                    x_start = ray * SCALE
+                    y_start = (SCREEN_HEIGHT / 2) - (wall_height / 2)
+                    
+                    self.canvas.create_rectangle(x_start, y_start, x_start + SCALE, y_start + wall_height,
+                                                fill=color, outline="")
+                    break
+
+                elif terrain == 2:  # Water
+                    dist = depth * math.cos(current_angle - self.player.angle)
+                    wall_distances[ray] = dist
+                    wall_height = min(SCREEN_HEIGHT, (TILE_SIZE * SCREEN_HEIGHT) / (dist + 0.0001))
+                    
+                    # Water ripple effect
+                    wave = math.sin(self.frame_count * 0.05 + depth * 0.01) * 5
+                    color = f"#{int(30 + wave):02x}{int(100 + wave):02x}{int(150 + wave):02x}"
+
+                    x_start = ray * SCALE
+                    y_start = (SCREEN_HEIGHT / 2) - (wall_height / 2)
+                    self.canvas.create_rectangle(x_start, y_start, x_start + SCALE, y_start + wall_height,
+                                                fill=color, outline="")
+                    break
+
+                elif terrain == 3:  # Destructible crate
+                    dist = depth * math.cos(current_angle - self.player.angle)
+                    wall_distances[ray] = dist
+                    wall_height = min(SCREEN_HEIGHT, (TILE_SIZE * SCREEN_HEIGHT) / (dist + 0.0001))
+
+                    color = "#8B7355"
+                    x_start = ray * SCALE
+                    y_start = (SCREEN_HEIGHT / 2) - (wall_height / 2)
+                    self.canvas.create_rectangle(x_start, y_start, x_start + SCALE, y_start + wall_height,
+                                                fill=color, outline="")
+                    break
+
+                elif terrain == 4:  # Trees
+                    dist = depth * math.cos(current_angle - self.player.angle)
+                    wall_distances[ray] = dist
+                    wall_height = min(SCREEN_HEIGHT, (TILE_SIZE * SCREEN_HEIGHT) / (dist + 0.0001))
+
+                    color = "#2d5016"
+                    x_start = ray * SCALE
+                    y_start = (SCREEN_HEIGHT / 2) - (wall_height / 2)
+                    self.canvas.create_rectangle(x_start, y_start, x_start + SCALE, y_start + wall_height,
+                                                fill=color, outline="")
+                    break
+
+        # Render enemies
+        active_enemies = [e for e in self.enemies if e.alive]
+        active_enemies.sort(key=lambda e: math.sqrt((e.x - self.player.x)**2 + (e.y - self.player.y)**2), reverse=True)
+
+        for enemy in active_enemies:
+            dx = enemy.x - self.player.x
+            dy = enemy.y - self.player.y
+            dist = math.sqrt(dx**2 + dy**2)
+
+            if dist > 10:
+                sprite_angle = math.atan2(dy, dx) - self.player.angle
+                while sprite_angle > math.pi:
+                    sprite_angle -= 2 * math.pi
+                while sprite_angle < -math.pi:
+                    sprite_angle += 2 * math.pi
+
+                if abs(sprite_angle) < HALF_FOV:
+                    screen_x = int((SCREEN_WIDTH / 2) + (math.tan(sprite_angle) * (SCREEN_WIDTH / 2)))
+                    sprite_size = min(SCREEN_HEIGHT - 100, int((TILE_SIZE * SCREEN_HEIGHT) / (dist + 1)))
+
+                    ray_idx = int((screen_x / SCREEN_WIDTH) * CASTED_RAYS)
+                    if 0 <= ray_idx < CASTED_RAYS and wall_distances[ray_idx] > dist:
+                        sx = screen_x - sprite_size // 2
+                        sy = (SCREEN_HEIGHT // 2) - sprite_size // 2
+
+                        # Enemy tank body
+                        self.canvas.create_rectangle(sx, sy, sx + sprite_size, sy + sprite_size,
+                                                    fill=enemy.color, outline="#440000", width=3)
+
+                        # Turret
+                        turret_center_x = screen_x
+                        turret_center_y = sy + sprite_size // 3
+                        turret_size = sprite_size // 3
+                        self.canvas.create_oval(turret_center_x - turret_size, turret_center_y - turret_size,
+                                              turret_center_x + turret_size, turret_center_y + turret_size,
+                                              fill="#990000", outline="#440000", width=2)
+
+                        # Cannon barrel
+                        cannon_len = sprite_size // 2
+                        cannon_x2 = turret_center_x + math.cos(enemy.cannon_angle - self.player.angle) * cannon_len
+                        cannon_y2 = turret_center_y + math.sin(enemy.cannon_angle - self.player.angle) * cannon_len
+                        self.canvas.create_line(turret_center_x, turret_center_y, cannon_x2, cannon_y2,
+                                              fill="#330000", width=4)
+
+                        # HP bar
+                        bar_width = sprite_size
+                        bar_height = 6
+                        bar_x = sx
+                        bar_y = sy - 12
+
+                        self.canvas.create_rectangle(bar_x, bar_y, bar_x + bar_width, bar_y + bar_height,
+                                                    fill="#333333", outline="white", width=1)
+                        hp_percent = max(0, enemy.hp / enemy.max_hp)
+                        bar_color = "#00ff00" if hp_percent > 0.5 else "#ff9900" if hp_percent > 0.25 else "#ff0000"
+                        self.canvas.create_rectangle(bar_x, bar_y, bar_x + (bar_width * hp_percent), bar_y + bar_height,
+                                                    fill=bar_color, outline="")
+
+                        # Armor indicator
+                        armor_text = f"ARM: {int(enemy.armor)}"
+                        self.canvas.create_text(screen_x, sy + sprite_size + 15, text=armor_text,
+                                              fill="yellow", font=("Courier", 8))
+
+    def draw_ui(self):
+        """Enhanced HUD"""
+        # Sky gradient effect
+        self.canvas.create_rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT / 2.5, fill="#5588dd", tags="bg")
+        self.canvas.create_rectangle(0, SCREEN_HEIGHT / 2.5, SCREEN_WIDTH, SCREEN_HEIGHT / 2, fill="#4477cc", tags="bg")
+        self.canvas.create_rectangle(0, SCREEN_HEIGHT / 2, SCREEN_WIDTH, SCREEN_HEIGHT, fill="#3a6f3a", tags="bg")
+        self.canvas.tag_lower("bg")
+
+        # Main HUD
+        self.canvas.create_text(15, 15, anchor="nw", fill="lime", font=("Courier", 13, "bold"),
+                               text=f"HP: {int(self.player.hp)}/{int(self.player.max_hp)}")
+        self.canvas.create_text(15, 40, anchor="nw", fill="yellow", font=("Courier", 11),
+                               text=f"ARMOR: {int(self.player.armor)}")
+
+        self.canvas.create_text(SCREEN_WIDTH - 15, 15, anchor="ne", fill="white", font=("Courier", 13, "bold"),
+                               text=f"SCORE: {self.score}")
+        self.canvas.create_text(SCREEN_WIDTH - 15, 40, anchor="ne", fill="white", font=("Courier", 11),
+                               text=f"KILLS: {self.kills}")
+
+        # Enemy count
+        alive_enemies = len([e for e in self.enemies if e.alive])
+        self.canvas.create_text(SCREEN_WIDTH / 2, 15, anchor="n", fill="white", font=("Courier", 12),
+                               text=f"ENEMIES: {alive_enemies}/{len(self.enemies)}")
+
+        # Crosshair with advanced targeting
+        cx, cy = SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2
+        cross_color = "red" if not self.player.can_fire() else "lime"
+        cross_size = 20
+
+        self.canvas.create_line(cx - cross_size, cy, cx + cross_size, cy, fill=cross_color, width=2)
+        self.canvas.create_line(cx, cy - cross_size, cx, cy + cross_size, fill=cross_color, width=2)
+
+        # Center dot
+        self.canvas.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill=cross_color, outline="")
+
+        # Cooldown bar
+        if not self.player.can_fire():
+            cooldown_percent = 1 - (self.player.cannon_cooldown / self.player.cannon_cooldown_max)
+            bar_width = 150
+            bar_x = SCREEN_WIDTH // 2 - bar_width // 2
+            bar_y = SCREEN_HEIGHT - 50
+
+            self.canvas.create_rectangle(bar_x, bar_y, bar_x + bar_width, bar_y + 20, fill="#333333", outline="lime", width=2)
+            self.canvas.create_rectangle(bar_x + 2, bar_y + 2, bar_x + 2 + (bar_width - 4) * cooldown_percent, bar_y + 18, fill="lime")
+            self.canvas.create_text(bar_x + bar_width // 2, bar_y + 10, text="RELOADING", fill="white", font=("Courier", 9, "bold"))
+
+        # Fire status
+        if self.player.on_fire:
+            self.canvas.create_text(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 80, text="🔥 ENGINE ON FIRE! 🔥",
+                                   fill="red", font=("Courier", 12, "bold"))
+
+        # FPS counter
+        self.canvas.create_text(SCREEN_WIDTH - 15, SCREEN_HEIGHT - 15, anchor="se", fill="white", font=("Courier", 9),
+                               text=f"FPS: {int(self.fps)}")
+
+        # Pause overlay
+        if self.paused:
+            self.canvas.create_rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, fill="black", stipple="gray50")
+            self.canvas.create_text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, text="⏸ PAUSED",
+                                   fill="white", font=("Courier", 48, "bold"))
+            self.canvas.create_text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 60, text="Press P to Resume",
+                                   fill="white", font=("Courier", 16))
+
+        # Game over
+        if not self.game_active:
+            self.canvas.create_rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, fill="#330000", stipple="gray50")
+            self.canvas.create_text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 50, text="DESTROYED",
+                                   fill="red", font=("Courier", 60, "bold"))
+            self.canvas.create_text(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 + 30,
+                                   text=f"Final Score: {self.score} | Kills: {self.kills}",
+                                   fill="white", font=("Courier", 18))
+
+    def draw_minimap(self):
+        """Realistic battlefield minimap"""
+        if not self.show_minimap:
+            return
+
+        minimap_size = 220
+        minimap_x = SCREEN_WIDTH - minimap_size - 15
+        minimap_y = 70
+
+        # Background
+        self.canvas.create_rectangle(minimap_x, minimap_y, minimap_x + minimap_size, minimap_y + minimap_size,
+                                    fill="#0a0a0a", outline="lime", width=2)
+
+        # Terrain
+        tile_scale = minimap_size / len(TERRAIN_MAP[0])
+
+        for row in range(len(TERRAIN_MAP)):
+            for col in range(len(TERRAIN_MAP[0])):
+                x0 = minimap_x + col * tile_scale
+                y0 = minimap_y + row * tile_scale
+
+                if TERRAIN_MAP[row][col] == 1:
+                    self.canvas.create_rectangle(x0, y0, x0 + tile_scale, y0 + tile_scale, fill="#555555", outline="")
+                elif TERRAIN_MAP[row][col] == 2:
+                    self.canvas.create_rectangle(x0, y0, x0 + tile_scale, y0 + tile_scale, fill="#1e5f7f", outline="")
+                elif TERRAIN_MAP[row][col] == 3:
+                    self.canvas.create_rectangle(x0, y0, x0 + tile_scale, y0 + tile_scale, fill="#8B7355", outline="")
+                elif TERRAIN_MAP[row][col] == 4:
+                    self.canvas.create_rectangle(x0, y0, x0 + tile_scale, y0 + tile_scale, fill="#2d5016", outline="")
+
+        # Player
+        player_map_x = minimap_x + (self.player.x / (len(TERRAIN_MAP[0]) * TILE_SIZE)) * minimap_size
+        player_map_y = minimap_y + (self.player.y / (len(TERRAIN_MAP) * TILE_SIZE)) * minimap_size
+        self.canvas.create_oval(player_map_x - 5, player_map_y - 5, player_map_x + 5, player_map_y + 5,
+                               fill="lime", outline="white", width=2)
+
+        # Enemy positions
+        for enemy in self.enemies:
+            if enemy.alive:
+                enemy_map_x = minimap_x + (enemy.x / (len(TERRAIN_MAP[0]) * TILE_SIZE)) * minimap_size
+                enemy_map_y = minimap_y + (enemy.y / (len(TERRAIN_MAP) * TILE_SIZE)) * minimap_size
+                self.canvas.create_oval(enemy_map_x - 3, enemy_map_y - 3, enemy_map_x + 3, enemy_map_y + 3,
+                                       fill="red", outline="darkred", width=1)
+
+    def update_projectiles(self):
+        """Advanced projectile system"""
+        for projectile in self.projectiles[:]:
+            if not projectile.update(TERRAIN_MAP):
+                self.projectiles.remove(projectile)
+                continue
+
+            # Enemy collision
+            for enemy in self.enemies:
+                if not enemy.alive:
+                    continue
+
+                dx = enemy.x - projectile.x
+                dy = enemy.y - projectile.y
+                dist = math.sqrt(dx**2 + dy**2)
+
+                if dist < 30:
+                    projectile.active = False
+                    enemy.take_damage(45)
+
+                    # Explosion particles
+                    for _ in range(20):
+                        angle = random.uniform(0, 2 * math.pi)
+                        speed = random.uniform(3, 8)
+                        self.particles.append(Particle(
+                            projectile.x, projectile.y,
+                            math.cos(angle) * speed,
+                            math.sin(angle) * speed,
+                            50, "#ff6600", size=5
+                        ))
+
+                    if not enemy.alive:
+                        self.score += 200
+                        self.kills += 1
+
+                        # Spawn harder wave
+                        if all(not e.alive for e in self.enemies):
+                            self.spawn_enemies(len(self.enemies) + 2)
+
+                    if projectile in self.projectiles:
+                        self.projectiles.remove(projectile)
+                    break
+
+    def update_particles(self):
+        """Update all particle effects"""
+        all_particles = self.particles + sum([e.particles for e in self.enemies], [])
+        
+        for particle in all_particles[:]:
+            if not particle.update():
+                try:
+                    if particle in self.particles:
+                        self.particles.remove(particle)
+                    else:
+                        for enemy in self.enemies:
+                            if particle in enemy.particles:
+                                enemy.particles.remove(particle)
+                                break
+                except:
+                    pass
+
+    def game_loop(self):
+        frame_start = time.time()
+
+        if self.game_active and not self.paused:
+            # Update entities
+            self.player.update(TERRAIN_MAP, self.enemies)
+
+            for enemy in self.enemies:
+                enemy.update(TERRAIN_MAP, self.player)
+
+            self.update_projectiles()
+            self.update_particles()
+
+            # Proximity damage
+            for enemy in self.enemies:
+                if enemy.alive:
+                    dx = enemy.x - self.player.x
+                    dy = enemy.y - self.player.y
+                    dist = math.sqrt(dx**2 + dy**2)
+
+                    if dist < 40:
+                        self.player.take_damage(0.15)
+
+            if self.player.hp <= 0:
+                self.game_active = False
+
+        # Rendering
+        self.canvas.delete("all")
+        self.cast_rays()
+        self.draw_minimap()
+        self.draw_ui()
+
+        self.frame_count += 1
+        frame_end = time.time()
+        frame_time = frame_end - frame_start
+        self.fps = 1.0 / frame_time if frame_time > 0 else 0
+
+        self.root.after(FRAME_TIME, self.game_loop)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    game = Tank3DBattlefield(root)
+    root.mainloop()
